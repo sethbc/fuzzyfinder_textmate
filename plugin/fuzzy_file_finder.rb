@@ -78,29 +78,12 @@ class FuzzyFileFinder
   class FileSystemEntry #:nodoc:
     attr_reader :parent
     attr_reader :name
+    attr_reader :path
 
-    def initialize(parent, name)
+    def initialize(parent, name, path)
       @parent = parent
       @name = name
-    end
-
-    def path
-      File.join(parent.name, name)
-    end
-  end
-
-  # Used internally to represent a subdirectory within the directory
-  # tree.
-  class Directory #:nodoc:
-    attr_reader :name
-
-    def initialize(name, is_root=false)
-      @name = name
-      @is_root = is_root
-    end
-
-    def root?
-      is_root
+      @path = path
     end
   end
 
@@ -131,13 +114,13 @@ class FuzzyFileFinder
     directories << "." if directories.empty?
 
     # expand any paths with ~
-    root_dirnames = directories.map { |d| File.expand_path(d) }.select { |d| File.directory?(d) }.uniq
+    @roots = directories.map { |d| File.expand_path(d) }.select { |d| File.directory?(d) }.uniq
 
-    @roots = root_dirnames.map { |d| Directory.new(d, true) }
     @shared_prefix = determine_shared_prefix
     @shared_prefix_re = Regexp.new("^#{Regexp.escape(shared_prefix)}" + (shared_prefix.empty? ? "" : "/"))
 
     @files = []
+    @cache = {}
     @ceiling = ceiling
 
     @ignores = Array(ignores)
@@ -152,6 +135,7 @@ class FuzzyFileFinder
   # the changes.
   def rescan!
     @files.clear
+    @cache.clear
     roots.each { |root| follow_tree(root) }
   end
 
@@ -216,17 +200,21 @@ class FuzzyFileFinder
   # described in #search), and returns up to +max+ matches in an
   # Array. If +max+ is nil, all matches will be returned.
   def find(pattern, max=nil)
-    results = []
-    search(pattern) do |match|
-      results << match
-      break if max && results.length >= max
+    results = @cache[pattern]
+    if results == nil
+        results = []
+        search(pattern) do |match|
+          results << match
+          break if max && results.length >= max
+        end
+        @cache[pattern] = results
     end
     return results
   end
 
   # Displays the finder object in a sane, non-explosive manner.
   def inspect #:nodoc:
-    "#<%s:0x%x roots=%s, files=%d>" % [self.class.name, object_id, roots.map { |r| r.name.inspect }.join(", "), files.length]
+    "#<%s:0x%x roots=%s, files=%d>" % [self.class.name, object_id, roots.map { |r| r.inspect }.join(", "), files.length]
   end
 
   private
@@ -234,16 +222,16 @@ class FuzzyFileFinder
     # Recursively scans +directory+ and all files and subdirectories
     # beneath it, depth-first.
     def follow_tree(directory)
-      Dir.entries(directory.name).each do |entry|
+      Dir.entries(directory).each do |entry|
         next if entry[0,1] == "."
-        raise TooManyEntries if files.length > ceiling
 
-        full = File.join(directory.name, entry)
+        full = File.join(directory, entry)
 
         if File.directory?(full) && File.readable?(full)
-          follow_tree(Directory.new(full))
+          follow_tree(full)
         elsif !ignore?(full.sub(@shared_prefix_re, ""))
-          files.push(FileSystemEntry.new(directory, entry))
+          files.push(FileSystemEntry.new(directory, entry, full))
+          raise TooManyEntries if files.length > ceiling
         end
       end
     end
@@ -321,7 +309,7 @@ class FuzzyFileFinder
     def match_path(path, path_matches, path_regex, path_segments)
       return path_matches[path] if path_matches.key?(path)
 
-      name_with_slash = path.name + "/" # add a trailing slash for matching the prefix
+      name_with_slash = path + "/" # add a trailing slash for matching the prefix
       matchable_name = name_with_slash.sub(@shared_prefix_re, "")
       matchable_name.chop! # kill the trailing slash
 
@@ -348,7 +336,7 @@ class FuzzyFileFinder
 
         result = { :path => file.path,
                    :abbr => abbr,
-                   :directory => file.parent.name,
+                   :directory => file.parent,
                    :name => file.name,
                    :highlighted_directory => path_match[:result],
                    :highlighted_name => match_result[:result],
@@ -361,9 +349,9 @@ class FuzzyFileFinder
     def determine_shared_prefix
       # the common case: if there is only a single root, then the entire
       # name of the root is the shared prefix.
-      return roots.first.name if roots.length == 1
+      return roots.first if roots.length == 1
 
-      split_roots = roots.map { |root| root.name.split(%r{/}) }
+      split_roots = roots.map { |root| root.split(%r{/}) }
       segments = split_roots.map { |root| root.length }.max
       master = split_roots.pop
 
@@ -375,7 +363,7 @@ class FuzzyFileFinder
 
       # shouldn't ever get here, since we uniq the root list before
       # calling this method, but if we do, somehow...
-      return roots.first.name
+      return roots.first
     end
 end
 
