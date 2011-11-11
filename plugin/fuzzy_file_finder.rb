@@ -116,14 +116,22 @@ class FuzzyFileFinder
     # expand any paths with ~
     @roots = directories.map { |d| File.expand_path(d) }.select { |d| File.directory?(d) }.uniq
 
-    @shared_prefix = determine_shared_prefix
-    @shared_prefix_re = Regexp.new("^#{Regexp.escape(shared_prefix)}" + (shared_prefix.empty? ? "" : "/"))
+    @shared_prefix = determine_shared_prefix.length
+    if @shared_prefix > 0
+      @shared_prefix += 1
+    end
 
     @files = []
     @cache = {}
     @ceiling = ceiling
 
-    @ignores = Array(ignores)
+    # change ignores to a regexp
+    if ignores != nil
+      globs = split_globs(ignores)
+      @ignores = Regexp.union(globs.map {|s| glob_to_pattern(s)})
+    else
+      @ignores = /.*/
+    end
 
     @highlighted_match_class = highlighter
 
@@ -229,17 +237,11 @@ class FuzzyFileFinder
 
         if File.directory?(full) && File.readable?(full)
           follow_tree(full)
-        elsif !ignore?(full.sub(@shared_prefix_re, ""))
+        elsif !@ignores.match(full[@shared_prefix..-1])
           files.push(FileSystemEntry.new(directory, entry, full))
           raise TooManyEntries if files.length > ceiling
         end
       end
-    end
-
-    # Returns +true+ if the given name matches any of the ignore
-    # patterns.
-    def ignore?(name)
-      ignores.any? { |pattern| File.fnmatch(pattern, name) }
     end
 
     # Takes the given pattern string "foo" and converts it to a new
@@ -253,6 +255,74 @@ class FuzzyFileFinder
         regex << "([^/]*?)" if regex.length > 0
         regex << "(" << Regexp.escape(character) << ")"
       end
+    end
+
+    # Takes a string of globs and splits them into an array
+    def split_globs(s)
+      globs = []
+      start = 0
+      offset = 0
+      braces = 0
+      loop {
+        i = s.index(/[:,{}]/, offset)
+
+        if i == nil
+          globs.push(s[start..-1])
+          break
+        end
+
+        if s[i].ord == '{'[0].ord
+          braces += 1
+        elsif s[i].ord == '}'[0].ord
+          braces -= 1
+        end
+
+        offset = i + 1
+
+        if braces == 0 &&
+          (s[i].ord == ":"[0].ord || s[i].ord == ","[0].ord)
+
+          if start < (i-1)
+            globs.push(s[start..i-1])
+          end
+
+          start = offset
+        end
+      }
+      globs
+    end
+
+    # Takes a glob and turns it into a regexp pattern.
+    def glob_to_pattern(s)
+      r = ['^']
+      curlies = 0
+      escaped = false
+      s.each_char {|c|
+        if ".()|+^$@%".include?(c)
+          r.push("\\#{c}")
+        elsif c == '*'
+          r.push(escaped ? "\\*" : ".*")
+        elsif c == '?'
+          r.push(escaped ? "\\." : ".")
+        elsif c == '{'
+          r.push(escaped ? "\\{" : "(")
+          curlies += 1 unless escaped
+        elsif c == '}' && curlies > 0
+          r.push(escaped ? "\\}" : ")")
+          curlies -= 1 unless escaped
+        elsif c == ',' && curlies > 0
+          r.push(escaped ? "," : "|")
+        elsif c == '\\'
+          r.push("\\\\") if escaped
+          escaped = !escaped
+          next
+        else
+          r.push(c)
+        end
+        escaped = false
+      }
+      r.push('$')
+      Regexp.new(r * "")
     end
 
     # Given a MatchData object +match+ and a number of "inside"
@@ -310,7 +380,7 @@ class FuzzyFileFinder
       return path_matches[path] if path_matches.key?(path)
 
       name_with_slash = path + "/" # add a trailing slash for matching the prefix
-      matchable_name = name_with_slash.sub(@shared_prefix_re, "")
+      matchable_name = name_with_slash[@shared_prefix..-1]
       matchable_name.chop! # kill the trailing slash
 
       if path_regex

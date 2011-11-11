@@ -76,7 +76,7 @@ ruby << RUBY
       fuzzy_roots = VIM.evaluate("g:fuzzy_roots")
       roots = fuzzy_roots.respond_to?(:split) ? fuzzy_roots.split("\n") : fuzzy_roots
       ceiling = VIM.evaluate("g:fuzzy_ceiling").to_i
-      ignore = VIM.evaluate("g:fuzzy_ignore").split(/[;,]/)
+      ignore = VIM.evaluate("g:fuzzy_ignore")
       FuzzyFileFinder.new(roots, ceiling, ignore)
     end
   end
