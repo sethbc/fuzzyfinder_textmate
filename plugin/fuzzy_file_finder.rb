@@ -303,7 +303,7 @@ class FuzzyFileFinder
         elsif c == '*'
           r.push(escaped ? "\\*" : ".*")
         elsif c == '?'
-          r.push(escaped ? "\\." : ".")
+          r.push(escaped ? "\\?" : ".")
         elsif c == '{'
           r.push(escaped ? "\\{" : "(")
           curlies += 1 unless escaped
